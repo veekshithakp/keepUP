@@ -1,5 +1,5 @@
 import type { DocumentReference } from "firebase-admin/firestore";
-import { adminDb, adminMessaging } from "./firebase-admin";
+import { getAdminDb, getAdminMessaging } from "./firebase-admin.js";
 
 interface PushToUserPayload {
   title: string;
@@ -17,6 +17,9 @@ function toStringRecord(input: Record<string, string | undefined>) {
 }
 
 export async function sendPushToUser(uid: string, payload: PushToUserPayload) {
+  const adminDb = getAdminDb();
+  const adminMessaging = getAdminMessaging();
+
   const tokensSnapshot = await adminDb
     .collection("users")
     .doc(uid)

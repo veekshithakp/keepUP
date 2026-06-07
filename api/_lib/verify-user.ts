@@ -1,4 +1,4 @@
-import { adminAuth } from "./firebase-admin";
+import { getAdminAuth } from "./firebase-admin.js";
 
 export async function verifyAuthenticatedUser(request: Request) {
   const authorization = request.headers.get("authorization");
@@ -13,5 +13,5 @@ export async function verifyAuthenticatedUser(request: Request) {
     throw new Error("Missing Firebase auth token.");
   }
 
-  return adminAuth.verifyIdToken(idToken);
+  return getAdminAuth().verifyIdToken(idToken);
 }

@@ -109,6 +109,23 @@ export async function sendSelfPushNotification(
   });
 
   if (!response.ok) {
+    const contentType = response.headers.get("content-type") ?? "";
+
+    if (contentType.includes("application/json")) {
+      const errorBody = (await response.json()) as {
+        error?: string;
+        missing?: string[];
+      };
+      const missingEnvSuffix =
+        errorBody.missing && errorBody.missing.length > 0
+          ? ` Missing: ${errorBody.missing.join(", ")}`
+          : "";
+
+      throw new Error(
+        `${errorBody.error || "Unable to send the notification right now."}${missingEnvSuffix}`,
+      );
+    }
+
     const message = await response.text();
     throw new Error(message || "Unable to send the notification right now.");
   }

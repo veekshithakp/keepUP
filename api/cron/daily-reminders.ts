@@ -1,5 +1,5 @@
-import { adminDb } from "../_lib/firebase-admin";
-import { sendPushToUser } from "../_lib/notifications";
+import { getAdminDb } from "../_lib/firebase-admin.js";
+import { sendPushToUser } from "../_lib/notifications.js";
 
 interface RoadmapTaskRecord {
   title?: string;
@@ -106,77 +106,100 @@ export default async function handler(request: Request) {
     return new Response("Unauthorized.", { status: 401 });
   }
 
-  const usersSnapshot = await adminDb.collection("users").get();
-  const todayKey = getTodayKey();
-  let notifiedUsers = 0;
+  try {
+    const adminDb = getAdminDb();
+    const usersSnapshot = await adminDb.collection("users").get();
+    const todayKey = getTodayKey();
+    let notifiedUsers = 0;
 
-  for (const userDocument of usersSnapshot.docs) {
-    const uid = userDocument.id;
-    const userData = userDocument.data() as { targetRole?: string };
+    for (const userDocument of usersSnapshot.docs) {
+      const uid = userDocument.id;
+      const userData = userDocument.data() as { targetRole?: string };
 
-    const [
-      tokensSnapshot,
-      roadmapSnapshot,
-      topicsSnapshot,
-      applicationsSnapshot,
-      metaSnapshot,
-    ] = await Promise.all([
-      adminDb.collection("users").doc(uid).collection("notificationTokens").get(),
-      adminDb.collection("users").doc(uid).collection("roadmaps").doc("active").get(),
-      adminDb.collection("users").doc(uid).collection("topics").get(),
-      adminDb.collection("users").doc(uid).collection("applications").get(),
-      adminDb
-        .collection("users")
-        .doc(uid)
-        .collection("notificationMeta")
-        .doc("daily-reminder")
-        .get(),
-    ]);
+      const [
+        tokensSnapshot,
+        roadmapSnapshot,
+        topicsSnapshot,
+        applicationsSnapshot,
+        metaSnapshot,
+      ] = await Promise.all([
+        adminDb
+          .collection("users")
+          .doc(uid)
+          .collection("notificationTokens")
+          .get(),
+        adminDb.collection("users").doc(uid).collection("roadmaps").doc("active").get(),
+        adminDb.collection("users").doc(uid).collection("topics").get(),
+        adminDb.collection("users").doc(uid).collection("applications").get(),
+        adminDb
+          .collection("users")
+          .doc(uid)
+          .collection("notificationMeta")
+          .doc("daily-reminder")
+          .get(),
+      ]);
 
-    if (tokensSnapshot.empty) {
-      continue;
+      if (tokensSnapshot.empty) {
+        continue;
+      }
+
+      if (metaSnapshot.exists && metaSnapshot.data().lastSentOn === todayKey) {
+        continue;
+      }
+
+      const milestones = roadmapSnapshot.exists
+        ? ((roadmapSnapshot.data().milestones as RoadmapMilestoneRecord[]) ?? [])
+        : [];
+      const applications = applicationsSnapshot.docs.map(
+        (document) => document.data() as ApplicationRecord,
+      );
+      const incompleteTopics = topicsSnapshot.docs.filter(
+        (document) => document.data().completed !== true,
+      ).length;
+
+      const payload = buildReminderPayload({
+        targetRole: userData.targetRole,
+        milestones,
+        applications,
+        incompleteTopics,
+      });
+      const delivered = await sendPushToUser(uid, payload);
+
+      if (delivered > 0) {
+        notifiedUsers += 1;
+        await adminDb
+          .collection("users")
+          .doc(uid)
+          .collection("notificationMeta")
+          .doc("daily-reminder")
+          .set({
+            lastSentOn: todayKey,
+            updatedAt: new Date().toISOString(),
+            lastType: payload.type,
+          });
+      }
     }
 
-    if (metaSnapshot.exists && metaSnapshot.data().lastSentOn === todayKey) {
-      continue;
-    }
-
-    const milestones = roadmapSnapshot.exists
-      ? ((roadmapSnapshot.data().milestones as RoadmapMilestoneRecord[]) ?? [])
-      : [];
-    const applications = applicationsSnapshot.docs.map(
-      (document) => document.data() as ApplicationRecord,
-    );
-    const incompleteTopics = topicsSnapshot.docs.filter(
-      (document) => document.data().completed !== true,
-    ).length;
-
-    const payload = buildReminderPayload({
-      targetRole: userData.targetRole,
-      milestones,
-      applications,
-      incompleteTopics,
+    return Response.json({
+      ok: true,
+      notifiedUsers,
+      date: todayKey,
     });
-    const delivered = await sendPushToUser(uid, payload);
+  } catch (error) {
+    console.error("daily-reminders failed", {
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
 
-    if (delivered > 0) {
-      notifiedUsers += 1;
-      await adminDb
-        .collection("users")
-        .doc(uid)
-        .collection("notificationMeta")
-        .doc("daily-reminder")
-        .set({
-          lastSentOn: todayKey,
-          updatedAt: new Date().toISOString(),
-          lastType: payload.type,
-        });
-    }
+    return Response.json(
+      {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to run daily reminder notifications.",
+      },
+      { status: 500 },
+    );
   }
-
-  return Response.json({
-    ok: true,
-    notifiedUsers,
-    date: todayKey,
-  });
 }
