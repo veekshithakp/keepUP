@@ -4,6 +4,7 @@ export * from "./coachService";
 export * from "./dashboardService";
 export * from "./firebase";
 export * from "./notificationService";
+export * from "./pushNotificationApi";
 export * from "./resumeService";
 export * from "./roadmapService";
 export * from "./studyPlannerService";

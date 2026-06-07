@@ -15,6 +15,8 @@ import { routePaths } from "../routes";
 import {
   analyzeJobApplicationLink,
   createJobApplication,
+  notifyApplicationCreated,
+  notifyApplicationStatusChanged,
   updateJobApplicationStatus,
 } from "../services";
 import { applicationStatuses, type ApplicationStatus } from "../types";
@@ -90,6 +92,10 @@ export default function Applications() {
         dateApplied: new Date(form.dateApplied).toISOString(),
         status: form.status,
       });
+      await notifyApplicationCreated({
+        company: form.company,
+        role: form.role,
+      }).catch(() => undefined);
 
       setForm({
         applicationUrl: "",
@@ -158,7 +164,15 @@ export default function Applications() {
     setPageError("");
 
     try {
+      const application = applications.find((item) => item.id === applicationId);
       await updateJobApplicationStatus(user.uid, applicationId, status);
+      if (application) {
+        await notifyApplicationStatusChanged({
+          company: application.company,
+          role: application.role,
+          status,
+        }).catch(() => undefined);
+      }
     } catch (nextError) {
       setPageError(
         nextError instanceof Error

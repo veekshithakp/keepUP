@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { enablePushNotifications, subscribeToForegroundNotifications } from "../services";
+import { sendTestPushNotification } from "../services";
 import { useAuth } from "./useAuth";
 
 interface BeforeInstallPromptEvent extends Event {
@@ -125,7 +126,12 @@ export function usePwa() {
 
     const token = await enablePushNotifications(user.uid);
     setNotificationPermission(Notification.permission);
+    await sendTestPushNotification().catch(() => undefined);
     return token;
+  }
+
+  async function sendTestNotification() {
+    await sendTestPushNotification();
   }
 
   return {
@@ -134,6 +140,7 @@ export function usePwa() {
     installApp,
     notificationPermission,
     enableNotifications,
+    sendTestNotification,
     lastNotificationTitle,
   };
 }

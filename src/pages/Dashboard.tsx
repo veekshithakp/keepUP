@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -15,8 +15,26 @@ import {
   YAxis,
 } from "recharts";
 import { DashboardMetricCard, DashboardPanel } from "../components/dashboard";
-import { useAuth, useDashboardData, usePwa } from "../hooks";
+import {
+  useApplications,
+  useAuth,
+  useDashboardData,
+  usePwa,
+  useStudyTracker,
+  useUserRoadmap,
+} from "../hooks";
 import { routePaths } from "../routes";
+import {
+  buildDailyReminderNotification,
+  buildInterviewReminderNotification,
+  buildRoadmapDeadlineNotification,
+  buildStudyReminderNotification,
+  sendDailyReminderPreviewNotification,
+  sendInterviewReminderPreviewNotification,
+  sendRoadmapDeadlinePreviewNotification,
+  sendStudyReminderPreviewNotification,
+  type SelfPushNotificationPayload,
+} from "../services";
 import { getUserDisplayName } from "../utils";
 
 const accentColors = {
@@ -53,11 +71,18 @@ export default function Dashboard() {
     installApp,
     notificationPermission,
     enableNotifications,
+    sendTestNotification,
     lastNotificationTitle,
   } = usePwa();
   const { data, loading, error } = useDashboardData(user?.uid);
+  const { applications } = useApplications(user?.uid);
+  const { roadmap } = useUserRoadmap(user?.uid);
+  const { progress } = useStudyTracker(user?.uid);
+  const [previewReferenceTime] = useState(() => Date.now());
   const [pwaMessage, setPwaMessage] = useState("");
   const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [testNotificationLoading, setTestNotificationLoading] = useState(false);
+  const [previewLoadingType, setPreviewLoadingType] = useState("");
 
   async function handleLogout() {
     await logout();
@@ -92,11 +117,139 @@ export default function Dashboard() {
     }
   }
 
+  async function handleSendTestNotification() {
+    setTestNotificationLoading(true);
+    setPwaMessage("");
+
+    try {
+      await sendTestNotification();
+      setPwaMessage(
+        "A test notification was sent. On localhost, it appears directly as a browser notification. On Vercel, it is sent through Firebase push.",
+      );
+    } catch (testError) {
+      setPwaMessage(
+        testError instanceof Error
+          ? testError.message
+          : "Unable to send a test notification right now.",
+      );
+    } finally {
+      setTestNotificationLoading(false);
+    }
+  }
+
   const profile = data?.profile;
   const analytics = data?.analytics;
   const readinessEngine = data?.readinessEngine;
   const trendData = analytics?.trend ?? [];
   const notificationsEnabled = notificationPermission === "granted";
+  const targetRole = profile?.targetRole?.trim() || "career";
+
+  const notificationPreviews = useMemo(() => {
+    const interviewStageApplications = applications.filter(
+      (application) =>
+        application.status === "Interview" || application.status === "HR Round",
+    );
+    const firstInterviewApplication = interviewStageApplications[0];
+
+    const roadmapTasks = (roadmap?.milestones ?? []).flatMap((milestone) =>
+      milestone.tasks.filter((task) => !task.completed && task.deadline),
+    );
+    const sortedTasks = [...roadmapTasks].sort((left, right) => {
+      const leftTime = left.deadline ? new Date(left.deadline).getTime() : Number.POSITIVE_INFINITY;
+      const rightTime = right.deadline ? new Date(right.deadline).getTime() : Number.POSITIVE_INFINITY;
+      return leftTime - rightTime;
+    });
+    const nextRoadmapTask = sortedTasks[0];
+    const daysUntilRoadmapTask = nextRoadmapTask?.deadline
+      ? Math.max(
+          0,
+          Math.ceil(
+            (new Date(nextRoadmapTask.deadline).getTime() - previewReferenceTime) /
+              (1000 * 60 * 60 * 24),
+          ),
+        )
+      : 1;
+
+    const studyTopicsLeft = Math.max(progress.totalTopics - progress.completedTopics, 0);
+
+    return [
+      {
+        id: "roadmap-deadline",
+        label: "Roadmap deadline",
+        payload: buildRoadmapDeadlineNotification({
+          taskTitle: nextRoadmapTask?.title || "Your next roadmap task",
+          daysUntil: daysUntilRoadmapTask,
+        }),
+        send: () =>
+          sendRoadmapDeadlinePreviewNotification({
+            taskTitle: nextRoadmapTask?.title || "Your next roadmap task",
+            daysUntil: daysUntilRoadmapTask,
+          }),
+      },
+      {
+        id: "interview-reminder",
+        label: "Interview reminder",
+        payload: buildInterviewReminderNotification({
+          count: Math.max(interviewStageApplications.length, 1),
+          company: firstInterviewApplication?.company || "your next company",
+          role: firstInterviewApplication?.role || "your interview role",
+        }),
+        send: () =>
+          sendInterviewReminderPreviewNotification({
+            count: Math.max(interviewStageApplications.length, 1),
+            company: firstInterviewApplication?.company || "your next company",
+            role: firstInterviewApplication?.role || "your interview role",
+          }),
+      },
+      {
+        id: "study-reminder",
+        label: "Study reminder",
+        payload: buildStudyReminderNotification({
+          incompleteTopics: Math.max(studyTopicsLeft, 1),
+          targetRole,
+        }),
+        send: () =>
+          sendStudyReminderPreviewNotification({
+            incompleteTopics: Math.max(studyTopicsLeft, 1),
+            targetRole,
+          }),
+      },
+      {
+        id: "daily-reminder",
+        label: "Daily reminder",
+        payload: buildDailyReminderNotification(targetRole),
+        send: () => sendDailyReminderPreviewNotification(targetRole),
+      },
+    ];
+  }, [
+    applications,
+    previewReferenceTime,
+    progress.completedTopics,
+    progress.totalTopics,
+    roadmap,
+    targetRole,
+  ]);
+
+  async function handleSendPreviewNotification(
+    previewId: string,
+    send: () => Promise<boolean>,
+  ) {
+    setPreviewLoadingType(previewId);
+    setPwaMessage("");
+
+    try {
+      await send();
+      setPwaMessage("Preview notification sent. Check your browser notification tray.");
+    } catch (previewError) {
+      setPwaMessage(
+        previewError instanceof Error
+          ? previewError.message
+          : "Unable to send the preview notification right now.",
+      );
+    } finally {
+      setPreviewLoadingType("");
+    }
+  }
 
   return (
     <div
@@ -227,6 +380,22 @@ export default function Dashboard() {
                   ? "Enabling Notifications..."
                   : "Enable Notifications"}
             </button>
+            {notificationsEnabled ? (
+              <button
+                type="button"
+                onClick={handleSendTestNotification}
+                disabled={testNotificationLoading}
+                style={{
+                  ...actionButtonStyle,
+                  cursor: testNotificationLoading ? "not-allowed" : "pointer",
+                  opacity: testNotificationLoading ? 0.7 : 1,
+                }}
+              >
+                {testNotificationLoading
+                  ? "Sending Test..."
+                  : "Send Test Notification"}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={handleLogout}
@@ -276,6 +445,53 @@ export default function Dashboard() {
           >
             Latest notification: {lastNotificationTitle}
           </div>
+        ) : null}
+
+        {notificationsEnabled ? (
+          <section
+            style={{
+              marginBottom: "18px",
+              padding: "20px",
+              borderRadius: "22px",
+              background: "rgba(10, 10, 10, 0.94)",
+              border: "1px solid rgba(199, 173, 144, 0.12)",
+            }}
+          >
+            <div style={{ marginBottom: "16px" }}>
+              <h2 style={{ margin: "0 0 8px", fontSize: "24px" }}>
+                Notification previews
+              </h2>
+              <p
+                style={{
+                  margin: 0,
+                  color: "var(--muted-stone)",
+                  lineHeight: 1.7,
+                }}
+              >
+                These are the exact reminders KeepUP can send based on your data.
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                gap: "14px",
+              }}
+            >
+              {notificationPreviews.map((preview) => (
+                <NotificationPreviewCard
+                  key={preview.id}
+                  label={preview.label}
+                  payload={preview.payload}
+                  loading={previewLoadingType === preview.id}
+                  onSend={() =>
+                    handleSendPreviewNotification(preview.id, preview.send)
+                  }
+                />
+              ))}
+            </div>
+          </section>
         ) : null}
 
         {error ? (
@@ -777,6 +993,74 @@ export default function Dashboard() {
           </DashboardPanel>
         </div>
       </div>
+    </div>
+  );
+}
+
+function NotificationPreviewCard({
+  label,
+  payload,
+  loading,
+  onSend,
+}: {
+  label: string;
+  payload: SelfPushNotificationPayload;
+  loading: boolean;
+  onSend: () => void;
+}) {
+  return (
+    <div
+      style={{
+        padding: "18px",
+        borderRadius: "18px",
+        background: "rgba(14, 14, 14, 0.96)",
+        border: "1px solid rgba(199, 173, 144, 0.12)",
+        display: "grid",
+        gap: "12px",
+      }}
+    >
+      <div>
+        <p
+          style={{
+            margin: "0 0 8px",
+            fontSize: "12px",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "var(--french-beige-soft)",
+          }}
+        >
+          {label}
+        </p>
+        <h3 style={{ margin: "0 0 8px", fontSize: "18px" }}>{payload.title}</h3>
+        <p
+          style={{
+            margin: 0,
+            color: "var(--muted-stone)",
+            lineHeight: 1.7,
+          }}
+        >
+          {payload.body}
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={onSend}
+        disabled={loading}
+        style={{
+          padding: "12px 16px",
+          borderRadius: "14px",
+          border: "1px solid rgba(199, 173, 144, 0.14)",
+          background: loading
+            ? "linear-gradient(135deg, #3d352c, #221c16)"
+            : "linear-gradient(135deg, #f7f3eb, #c7ad90)",
+          color: "#050505",
+          fontWeight: 700,
+          cursor: loading ? "not-allowed" : "pointer",
+        }}
+      >
+        {loading ? "Sending..." : "Send Preview"}
+      </button>
     </div>
   );
 }

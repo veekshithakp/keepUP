@@ -1,4 +1,11 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/cron/daily-reminders",
+      "schedule": "30 2 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",
